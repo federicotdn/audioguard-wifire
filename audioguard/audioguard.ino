@@ -11,7 +11,7 @@
 // CONSTANTS
 
 // SSID
-const char *szSsid = "ITBA-Labs";
+const char *szSsid = "waifai";
 
 // select 1 for the security you want, or none for no security
 #define USE_WPA2_PASSPHRASE
@@ -23,7 +23,7 @@ const char *szSsid = "ITBA-Labs";
 // modify the security key to what you have.
 #if defined(USE_WPA2_PASSPHRASE)
 
-    const char * szPassPhrase = "ITBALABS";
+    const char * szPassPhrase = "";
     #define WiFiConnectMacro() deIPcK.wfConnect(szSsid, szPassPhrase, &status)
 
 #elif defined(USE_WPA2_KEY)
@@ -86,8 +86,11 @@ int cbRead = 0;
 
 #define LED_PIN 13
 #define MICROPHONE_PIN A0
-const char *agServerIp = "10.16.66.58";
+#define SAMPLE_FREQ 50
+#define VOLTAGE_40DB 0.04
+const char *agServerIp = "192.168.1.108";
 const uint16_t agServerPort = 9000;
+double refVoltage = 1;
 
 void blinkForever()
 {
@@ -109,6 +112,12 @@ void setup()
     pinMode(LED_PIN, OUTPUT);
     digitalWrite(LED_PIN, HIGH);
 
+    Serial.println("Reading microphone voltage value for 40dB");
+    double v = readMicrophoneVoltage();
+    Serial.println("Microphone voltage at 40dB is:");
+    Serial.println(v);
+    refVoltage = v;
+
     Serial.println("Connecting to WiFi...");
 }
 
@@ -124,6 +133,7 @@ void loop()
                 Serial.println("WiFi connected");
                 deIPcK.begin();
                 state = TCPCONNECT;
+                digitalWrite(LED_PIN, LOW);
             }
             else if (IsIPStatusAnError(status))
             {
@@ -142,10 +152,14 @@ void loop()
         break;
 
         case WRITE:
-            int volume;
+            double v, volume;
             if (tcpSocket.isEstablished())
             {
-                volume = analogRead(MICROPHONE_PIN);
+                v = readMicrophoneVoltage();
+                volume = 20 * log(v / refVoltage);
+
+                Serial.println("Sending HTTP request. Volume:");
+                Serial.println(volume);
 
                 tcpSocket.print("GET /sendData?volume=");
                 tcpSocket.print(volume);
@@ -196,3 +210,30 @@ void loop()
     DEIPcK::periodicTasks();
 }
 
+double readMicrophoneVoltage()
+{
+    unsigned long startMillis = millis();
+    unsigned int peakToPeak = 0;
+
+    unsigned int signalMax = 0;
+    unsigned int signalMin = 1024;
+
+    while (millis() - startMillis < SAMPLE_FREQ)
+    {
+        unsigned int sample = analogRead(A0);
+        if (sample < 1024)
+        {
+            if (sample > signalMax)
+            {
+                signalMax = sample;
+            }
+            else if (sample < signalMin)
+            {
+                signalMin = sample;
+            }
+        }
+    }
+
+    peakToPeak = signalMax - signalMin;
+    return (peakToPeak * 5.0) / 1024;
+}
