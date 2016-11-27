@@ -81,6 +81,7 @@ IPEndPoint epRemote;
 #define LED_PIN 13
 #define MICROPHONE_PIN A0
 #define SAMPLE_FREQ 100
+#define INITIAL_V_LEN 10
 const char *agServerIp = "192.168.1.110";
 const uint16_t agServerPort = 9001;
 double refVoltage = 1;
@@ -106,10 +107,18 @@ void setup()
     digitalWrite(LED_PIN, HIGH);
 
     Serial.println("Reading microphone voltage value for 40dB");
-    double v = readMicrophoneVoltage();
+
+    double total = 0;
+    for (int i = 0; i < INITIAL_V_LEN; i++)
+    {
+        total += readMicrophoneVoltage();
+    }
+    
+    total /= INITIAL_V_LEN;
+
     Serial.println("Microphone voltage at 40dB is:");
-    Serial.println(v);
-    refVoltage = v;
+    Serial.println(total);
+    refVoltage = total;
 
     Serial.println("Connecting to WiFi...");
 }
@@ -127,7 +136,7 @@ void loop() {
             }
             else if(IsIPStatusAnError(status))
             {
-                Serial.print("Unable to connection, status: ");
+                Serial.print("Unable to connect, status: ");
                 Serial.println(status, DEC);
                 state = ERR;
             }
