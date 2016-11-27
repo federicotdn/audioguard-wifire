@@ -1,7 +1,7 @@
 /*
  * AudioGuard - WiFire Sketch
  *
- * Based on: https://github.com/ricklon/deIPcK/blob/master/DEWFcK/examples/WiFiTCPEchoClient/WiFiTCPEchoClient.pde
+ * Based on: https://github.com/ricklon/deIPcK/blob/master/DEWFcK/examples/WiFiUDPEchoClient/WiFiUDPEchoClient.pde
  */
 
 #include <MRF24G.h>
@@ -64,32 +64,25 @@ const char *szSsid = "waifai";
 
 typedef enum
 {
-    NONE = 0,
     CONNECT,
-    TCPCONNECT,
+    RESOLVEENDPOINT,
     WRITE,
-    READ,
-    CLOSE,
     ERR
 } STATE;
 
 STATE state = CONNECT;
 
-unsigned tStart = 0;
-unsigned tWait = 5000;
-
-TCPSocket tcpSocket;
-byte rgbRead[1024];
-int cbRead = 0;
+UDPSocket udpClient;
+IPSTATUS status = ipsSuccess;
+IPEndPoint epRemote;
 
 // AudioGuard config
 
 #define LED_PIN 13
 #define MICROPHONE_PIN A0
-#define SAMPLE_FREQ 50
-#define VOLTAGE_40DB 0.04
-const char *agServerIp = "192.168.1.108";
-const uint16_t agServerPort = 9000;
+#define SAMPLE_FREQ 100
+const char *agServerIp = "192.168.1.110";
+const uint16_t agServerPort = 9001;
 double refVoltage = 1;
 
 void blinkForever()
@@ -121,92 +114,76 @@ void setup()
     Serial.println("Connecting to WiFi...");
 }
 
-void loop()
-{
-    IPSTATUS status;
-
+void loop() {
     switch(state)
     {
         case CONNECT:
             if (WiFiConnectMacro())
             {
-                Serial.println("WiFi connected");
+                Serial.println("WiFi connected.");
                 deIPcK.begin();
-                state = TCPCONNECT;
+                state = RESOLVEENDPOINT;
                 digitalWrite(LED_PIN, LOW);
             }
-            else if (IsIPStatusAnError(status))
+            else if(IsIPStatusAnError(status))
             {
-                Serial.print("Unable to connect, status: ");
+                Serial.print("Unable to connection, status: ");
                 Serial.println(status, DEC);
                 state = ERR;
             }
             break;
 
-        case TCPCONNECT:
-            if (deIPcK.tcpConnect(agServerIp, agServerPort, tcpSocket))
+        case RESOLVEENDPOINT:
+            if (deIPcK.resolveEndPoint(agServerIp, agServerPort, epRemote, &status))
             {
-                Serial.println("Connected to server.");
-                state = WRITE;
+                if (deIPcK.udpSetEndPoint(epRemote, udpClient, portDynamicallyAssign, &status))
+                {
+                    state = WRITE;
+                }
             }
-        break;
 
-        case WRITE:
-            double v, volume;
-            if (tcpSocket.isEstablished())
+            if (IsIPStatusAnError(status))
             {
-                v = readMicrophoneVoltage();
-                volume = 20 * log(v / refVoltage);
-
-                Serial.println("Sending HTTP request. Volume:");
-                Serial.println(volume);
-
-                tcpSocket.print("GET /sendData?volume=");
-                tcpSocket.print(volume);
-                tcpSocket.print(" HTTP/1.1\r\n");
-                tcpSocket.print("Host: www.audioguard.com\r\n");
-                tcpSocket.print("Content-Type: application/json\r\n");
-                tcpSocket.print("Accept: */*\r\n");
-                tcpSocket.print("\r\n");
-
-                Serial.println();
-                Serial.println("Bytes Read Back:");
-                state = READ;
-                tStart = (unsigned) millis();
+                Serial.print("Unable to resolve endpoint, error: 0x");
+                Serial.println(status, HEX);
+                state = ERR;
             }
             break;
 
-            case READ:
-                if ((cbRead = tcpSocket.available()) > 0)
+       case WRITE:
+            double v, volume;
+            long int written;
+            if (deIPcK.isIPReady(&status))
+            {
+                v = readMicrophoneVoltage();
+                volume = 20 * log(v / refVoltage);
+                Serial.println("Writing out Datagram, volume:");
+                Serial.println(volume);
+  
+                written = udpClient.writeDatagram((byte*)&volume, sizeof(double));
+                if (written == 0)
                 {
-                    cbRead = cbRead < sizeof(rgbRead) ? cbRead : sizeof(rgbRead);
-                    cbRead = tcpSocket.readStream(rgbRead, cbRead);
-
-                    for (int i = 0; i < cbRead; i++)
-                    {
-                        Serial.print((char)rgbRead[i]);
-                    }
+                    Serial.println("Unable to write datagram.");
+                    state = ERR;
                 }
-                else if ((((unsigned)millis()) - tStart) > tWait)
-                {
-                    state = CLOSE;
-                }
-
-                break;
-
-        case CLOSE:
-            tcpSocket.close();
-            Serial.println("Closing TCP Socket.");
-            state = TCPCONNECT;
+            }
+            else if (IsIPStatusAnError(status))
+            {
+                Serial.print("Lost the network, error: 0x");
+                Serial.println(status, HEX);
+                state = ERR;
+            }
             break;
 
         case ERR:
         default:
-            Serial.println("Entering error state.");
-            blinkForever();
+            udpClient.close();
+            delay(100);
+            state = RESOLVEENDPOINT;
             break;
     }
 
+    // keep the stack alive each pass through the loop()
     DEIPcK::periodicTasks();
 }
 
@@ -220,7 +197,7 @@ double readMicrophoneVoltage()
 
     while (millis() - startMillis < SAMPLE_FREQ)
     {
-        unsigned int sample = analogRead(A0);
+        unsigned int sample = analogRead(MICROPHONE_PIN);
         if (sample < 1024)
         {
             if (sample > signalMax)
